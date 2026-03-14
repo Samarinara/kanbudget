@@ -8,6 +8,7 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
+  TouchSensor,
   DragEndEvent,
   DragOverlay,
   defaultDropAnimationSideEffects,
@@ -25,40 +26,37 @@ import { CSS } from "@dnd-kit/utilities"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
+import { useDB } from "@/hooks/useDB"
+import { useVisibleColumns } from "@/hooks/useVisibleColumns"
+import { BudgetItemDialog } from "@/components/budget-item-dialog"
+import { ITxn } from "@/types"
+import { IconPlus, IconTrash } from "@tabler/icons-react"
 
-interface Item {
-  id: string
-  content: string
-  isPlaceholder?: boolean
+interface TxnItem {
+  id: number
+  txn: ITxn
 }
 
 const PLACEHOLDER_SUFFIX = "-placeholder"
 
-const createPlaceholderItem = (columnKey: string): Item => ({
+const createPlaceholderItem = (
+  columnKey: string
+): { id: string; isPlaceholder: boolean } => ({
   id: `${columnKey}${PLACEHOLDER_SUFFIX}`,
-  content: "",
   isPlaceholder: true,
 })
 
-const getItems = (count: number, offset: number = 0): Item[] =>
-  Array.from({ length: count }, (_, k) => ({
-    id: `item-${k + offset}`,
-    content: `item ${k + offset}`,
-  }))
-
 function SortableItem({
   id,
-  content,
-  index,
+  txn,
+  onEdit,
   onDelete,
 }: {
-  id: string
-  content: string
-  index: number
-  onDelete: (index: number) => void
+  id: number
+  txn: ITxn
+  onEdit: (txn: ITxn) => void
+  onDelete: (id: number) => void
 }) {
-  const isPlaceholder = id.endsWith(PLACEHOLDER_SUFFIX)
-
   const {
     attributes,
     listeners,
@@ -66,7 +64,7 @@ function SortableItem({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id })
+  } = useSortable({ id: id.toString() })
 
   const style = {
     transform: CSS.Translate.toString(transform),
@@ -74,16 +72,9 @@ function SortableItem({
     opacity: isDragging ? 0.4 : 1,
   }
 
-  if (isPlaceholder) {
-    return (
-      <div
-        ref={setNodeRef}
-        className="min-h-[60px] text-center text-xs text-zinc-300 dark:text-zinc-600"
-      >
-        Drop items here
-      </div>
-    )
-  }
+  const isExpense = txn.amount < 0
+  const amountColor = isExpense ? "text-red-500" : "text-green-500"
+  const amountPrefix = isExpense ? "-" : "+"
 
   return (
     <div
@@ -94,19 +85,51 @@ function SortableItem({
       {...listeners}
     >
       <Card className="pointer-events-none">
-        <CardContent className="pointer-events-auto flex items-center justify-between p-4">
-          <span>{content}</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-auto p-0 text-zinc-400 hover:text-red-400"
-            onClick={(e) => {
-              e.stopPropagation()
-              onDelete(index)
-            }}
-          >
-            delete
-          </Button>
+        <CardContent className="pointer-events-auto flex flex-col gap-2 p-4">
+          <div className="flex items-start justify-between">
+            <button
+              type="button"
+              className="text-left font-medium hover:underline"
+              onClick={(e) => {
+                e.stopPropagation()
+                onEdit(txn)
+              }}
+            >
+              {txn.desc}
+            </button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="ml-2 h-auto flex-shrink-0 p-0 text-zinc-400 hover:text-red-400"
+              onClick={(e) => {
+                e.stopPropagation()
+                onDelete(id)
+              }}
+            >
+              <IconTrash size={14} />
+            </Button>
+          </div>
+          <div className={`font-semibold ${amountColor}`}>
+            {amountPrefix}${Math.abs(txn.amount).toFixed(2)}
+          </div>
+          {txn.note && (
+            <div className="line-clamp-2 text-xs text-muted-foreground">
+              {txn.note}
+            </div>
+          )}
+          {txn.tags && txn.tags.length > 0 && (
+            <div className="flex flex-wrap gap-1">
+              {txn.tags.map((tag) => (
+                <span
+                  key={tag}
+                  className="rounded-full bg-secondary px-2 py-0.5 text-xs"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="text-xs text-muted-foreground">{txn.date}</div>
         </CardContent>
       </Card>
     </div>
@@ -118,24 +141,36 @@ function CalendarColumn({
   index,
   items,
   isToday,
-  onAddItem,
+  onEditItem,
   onDeleteItem,
 }: {
   date: Date
   index: number
-  items: Item[]
+  items: TxnItem[]
   isToday: boolean
-  onAddItem: () => void
-  onDeleteItem: (containerKey: string, itemIndex: number) => void
+  onEditItem: (txn: ITxn) => void
+  onDeleteItem: (id: number) => void
 }) {
   const key = dateToKey(date)
   const { setNodeRef, isOver } = useDroppable({ id: key })
+
+  const placeholderItem = useMemo(() => createPlaceholderItem(key), [key])
+
+  const allItems = useMemo(() => {
+    if (items.length === 0) {
+      return [placeholderItem]
+    }
+    return [
+      ...items.map((i) => ({ ...i, id: i.id.toString() })),
+      placeholderItem,
+    ]
+  }, [items, placeholderItem])
 
   return (
     <Card
       ref={setNodeRef}
       data-container-id={key}
-      className={`${getColumnVisibility(index)} min-h-[400px] w-[250px] flex-shrink-0 flex-col ${
+      className={`${getColumnVisibility(index)} w-[85vw] min-w-[200px] flex-shrink-0 flex-col md:w-[250px] ${
         isToday ? "ring-2 ring-blue-500" : ""
       } ${isOver ? "ring-2 ring-blue-400" : ""}`}
     >
@@ -149,32 +184,29 @@ function CalendarColumn({
         >
           {formatDateHeader(date)}
         </CardTitle>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200"
-          onClick={onAddItem}
-        >
-          +
-        </Button>
       </CardHeader>
       <CardContent className="flex flex-col gap-2 p-4 pt-0">
         <SortableContext
-          items={items.map((i) => i.id)}
+          items={allItems.map((i) => i.id)}
           strategy={verticalListSortingStrategy}
         >
           <div className="flex flex-col gap-2">
-            {items.map((item, itemIndex) => (
+            {items.map((item) => (
               <SortableItem
                 key={item.id}
                 id={item.id}
-                content={item.content}
-                index={itemIndex}
-                onDelete={(idx) => onDeleteItem(key, idx)}
+                txn={item.txn}
+                onEdit={onEditItem}
+                onDelete={onDeleteItem}
               />
             ))}
           </div>
         </SortableContext>
+        {items.length === 0 && (
+          <div className="min-h-[60px] text-center text-xs text-zinc-300 dark:text-zinc-600">
+            Drop items here
+          </div>
+        )}
       </CardContent>
     </Card>
   )
@@ -219,9 +251,9 @@ function dateToKey(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
 }
 
-function getFiveDayPeriod(endDate: Date): Date[] {
+function getColumnPeriod(endDate: Date, numColumns: number): Date[] {
   const days: Date[] = []
-  for (let i = 4; i >= 0; i--) {
+  for (let i = numColumns - 1; i >= 0; i--) {
     const d = new Date(endDate)
     d.setDate(d.getDate() - i)
     days.push(d)
@@ -250,26 +282,17 @@ function getColumnVisibility(index: number): string {
 export default function QuoteApp() {
   const today = useMemo(() => new Date(), [])
   const [endDate, setEndDate] = useState<Date>(new Date(today))
-  const itemCounter = React.useRef(0)
-  const [state, setState] = useState<Record<string, Item[]>>({})
-  const [initialized, setInitialized] = useState(false)
+  const visibleColumns = useVisibleColumns()
 
-  React.useEffect(() => {
-    if (initialized) return
-    const period = getFiveDayPeriod(today)
-    const initial: Record<string, Item[]> = {}
-    let counter = 0
-    period.forEach((d) => {
-      const key = dateToKey(d)
-      initial[key] = [...getItems(2, counter), createPlaceholderItem(key)]
-      counter += 2
-    })
-    itemCounter.current = counter
-    setState(initial)
-    setInitialized(true)
-  }, [today, initialized])
+  const { txns, addTxn, updateTxn, deleteTxn, moveTxnToColumn, tags, addTag } =
+    useDB()
+
+  const [dialogOpen, setDialogOpen] = useState(false)
+  const [editingItem, setEditingItem] = useState<ITxn | null>(null)
 
   const [activeId, setActiveId] = useState<string | null>(null)
+
+  const [localState, setLocalState] = useState<Record<string, TxnItem[]>>({})
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -277,44 +300,49 @@ export default function QuoteApp() {
         distance: 5,
       },
     }),
+    useSensor(TouchSensor, {
+      activationConstraint: {
+        delay: 200,
+        tolerance: 5,
+      },
+    }),
     useSensor(KeyboardSensor, {
       coordinateGetter: sortableKeyboardCoordinates,
     })
   )
 
-  const fiveDayPeriod = useMemo(() => getFiveDayPeriod(endDate), [endDate])
-  const columnKeys = useMemo(
-    () => fiveDayPeriod.map(dateToKey),
-    [fiveDayPeriod]
+  const columnPeriod = useMemo(
+    () => getColumnPeriod(endDate, visibleColumns),
+    [endDate, visibleColumns]
   )
-  const todayKey = dateToKey(today)
+  const columnKeys = useMemo(() => columnPeriod.map(dateToKey), [columnPeriod])
 
-  React.useEffect(() => {
-    setState((prev) => {
-      const newState = { ...prev }
-      let needsUpdate = false
-      for (const date of fiveDayPeriod) {
-        const key = dateToKey(date)
-        if (!newState[key]) {
-          newState[key] = [createPlaceholderItem(key)]
-          needsUpdate = true
-        } else if (
-          !newState[key].some((i) => i.id.endsWith(PLACEHOLDER_SUFFIX))
-        ) {
-          newState[key] = [...newState[key], createPlaceholderItem(key)]
-          needsUpdate = true
+  const baseState = useMemo(() => {
+    const txnMap: Record<string, TxnItem[]> = {}
+    columnPeriod.forEach((d: Date) => {
+      txnMap[dateToKey(d)] = []
+    })
+
+    txns.forEach((txn) => {
+      if (txn.id !== undefined) {
+        const key = txn.date
+        if (txnMap[key]) {
+          txnMap[key].push({ id: txn.id, txn })
         }
       }
-      return needsUpdate ? newState : prev
     })
-  }, [fiveDayPeriod])
+
+    return txnMap
+  }, [txns, columnPeriod])
+
+  const state = Object.keys(localState).length > 0 ? localState : baseState
 
   const findContainer = (id: string) => {
     if (typeof id === "string" && id.endsWith(PLACEHOLDER_SUFFIX)) {
       return id.replace(PLACEHOLDER_SUFFIX, "")
     }
     for (const key of columnKeys) {
-      if (state[key]?.some((item) => item.id === id)) {
+      if (state[key]?.some((item) => item.id.toString() === id)) {
         return key
       }
     }
@@ -344,16 +372,18 @@ export default function QuoteApp() {
       return
     }
 
-    setState((prev) => {
+    setLocalState((prev) => {
       const sourceColumn = [...prev[activeContainer]]
       const destColumn = [...prev[overContainer]]
-      const activeIndex = sourceColumn.findIndex((i) => i.id === active.id)
+      const activeIndex = sourceColumn.findIndex(
+        (i) => i.id.toString() === active.id
+      )
       const [movedItem] = sourceColumn.splice(activeIndex, 1)
 
       const placeholderIndex = destColumn.findIndex((i) =>
-        i.id.endsWith(PLACEHOLDER_SUFFIX)
+        i.id.toString().endsWith(PLACEHOLDER_SUFFIX)
       )
-      const overIndex = destColumn.findIndex((i) => i.id === over.id)
+      const overIndex = destColumn.findIndex((i) => i.id.toString() === over.id)
 
       let insertIndex: number
       if (overIndex >= 0 && placeholderIndex !== overIndex) {
@@ -366,11 +396,6 @@ export default function QuoteApp() {
 
       destColumn.splice(insertIndex, 0, movedItem)
 
-      if (placeholderIndex >= 0 && placeholderIndex !== destColumn.length - 1) {
-        const [placeholder] = destColumn.splice(placeholderIndex, 1)
-        destColumn.push(placeholder)
-      }
-
       return {
         ...prev,
         [activeContainer]: sourceColumn,
@@ -379,7 +404,7 @@ export default function QuoteApp() {
     })
   }
 
-  function handleDragEnd(event: DragEndEvent) {
+  async function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event
     setActiveId(null)
 
@@ -396,11 +421,13 @@ export default function QuoteApp() {
 
     if (activeContainer === overContainer) {
       const activeIndex = state[activeContainer].findIndex(
-        (i) => i.id === active.id
+        (i) => i.id.toString() === active.id
       )
-      const overIndex = state[overContainer].findIndex((i) => i.id === over.id)
+      const overIndex = state[activeContainer].findIndex(
+        (i) => i.id.toString() === over.id
+      )
       if (activeIndex !== overIndex && overIndex !== -1) {
-        setState((prev) => ({
+        setLocalState((prev) => ({
           ...prev,
           [activeContainer]: arrayMove(
             prev[activeContainer],
@@ -410,86 +437,39 @@ export default function QuoteApp() {
         }))
       }
     } else {
-      setState((prev) => {
-        const sourceColumn = [...prev[activeContainer]]
-        const destColumn = [...prev[overContainer]]
-        const activeIndex = sourceColumn.findIndex((i) => i.id === active.id)
-        const [movedItem] = sourceColumn.splice(activeIndex, 1)
-
-        const placeholderIndex = destColumn.findIndex((i) =>
-          i.id.endsWith(PLACEHOLDER_SUFFIX)
-        )
-        const overIndex = destColumn.findIndex((i) => i.id === over.id)
-
-        let insertIndex: number
-        if (overIndex >= 0 && placeholderIndex !== overIndex) {
-          insertIndex = overIndex
-        } else if (placeholderIndex >= 0) {
-          insertIndex = placeholderIndex
-        } else {
-          insertIndex = destColumn.length
-        }
-
-        destColumn.splice(insertIndex, 0, movedItem)
-
-        if (
-          placeholderIndex >= 0 &&
-          placeholderIndex !== destColumn.length - 1
-        ) {
-          const [placeholder] = destColumn.splice(placeholderIndex, 1)
-          destColumn.push(placeholder)
-        }
-
-        return {
-          ...prev,
-          [activeContainer]: sourceColumn,
-          [overContainer]: destColumn,
-        }
-      })
+      const itemId = parseInt(active.id as string)
+      await moveTxnToColumn(itemId, overContainer)
     }
   }
 
-  const handleDeleteItem = (containerKey: string, itemIndex: number) => {
-    setState((prev) => {
-      const column = prev[containerKey] || []
-      const item = column[itemIndex]
-      if (!item || item.id.endsWith(PLACEHOLDER_SUFFIX)) {
-        return prev
-      }
-      const newColumn = [...column]
-      newColumn.splice(itemIndex, 1)
-      return { ...prev, [containerKey]: newColumn }
-    })
+  const handleDeleteItem = async (id: number) => {
+    await deleteTxn(id)
   }
 
-  const handleAddItem = (containerKey: string) => {
-    setState((prev) => {
-      const column = prev[containerKey] || []
-      const placeholderIndex = column.findIndex((i) =>
-        i.id.endsWith(PLACEHOLDER_SUFFIX)
-      )
-      const newItem: Item = {
-        id: `item-${itemCounter.current++}`,
-        content: `item ${itemCounter.current}`,
-      }
-      if (placeholderIndex >= 0) {
-        const newColumn = [...column]
-        newColumn.splice(placeholderIndex, 0, newItem)
-        return { ...prev, [containerKey]: newColumn }
-      }
-      return {
-        ...prev,
-        [containerKey]: [...column, newItem],
-      }
-    })
+  const handleAddItem = () => {
+    setEditingItem(null)
+    setDialogOpen(true)
+  }
+
+  const handleEditItem = (txn: ITxn) => {
+    setEditingItem(txn)
+    setDialogOpen(true)
+  }
+
+  const handleSaveItem = async (txnData: Omit<ITxn, "id">) => {
+    if (editingItem?.id) {
+      await updateTxn(editingItem.id, txnData)
+    } else {
+      await addTxn(txnData)
+    }
   }
 
   const navigatePrev = () => {
-    setEndDate((prev) => subtractDays(prev, 5))
+    setEndDate((prev) => subtractDays(prev, visibleColumns))
   }
 
   const navigateNext = () => {
-    setEndDate((prev) => addDays(prev, 5))
+    setEndDate((prev) => addDays(prev, visibleColumns))
   }
 
   const goToToday = () => {
@@ -499,23 +479,39 @@ export default function QuoteApp() {
   const activeItem = activeId
     ? Object.values(state)
         .flat()
-        .find((i) => i.id === activeId)
+        .find((i) => i.id.toString() === activeId)
     : null
 
   return (
-    <div className="p-4">
-      <div className="mb-4 flex items-center justify-between gap-4">
+    <div className="p-2 md:p-4">
+      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex gap-2">
-          <Button variant="secondary" onClick={navigatePrev}>
+          <Button
+            variant="secondary"
+            onClick={navigatePrev}
+            className="flex-1 sm:flex-initial"
+          >
             ← Prev
           </Button>
-          <Button variant="secondary" onClick={goToToday}>
+          <Button
+            variant="secondary"
+            onClick={goToToday}
+            className="flex-1 sm:flex-initial"
+          >
             Today
           </Button>
-          <Button variant="secondary" onClick={navigateNext}>
+          <Button
+            variant="secondary"
+            onClick={navigateNext}
+            className="flex-1 sm:flex-initial"
+          >
             Next →
           </Button>
         </div>
+        <Button onClick={handleAddItem} className="w-full sm:w-auto">
+          <IconPlus size={16} className="mr-1" />
+          Add Item
+        </Button>
       </div>
       <DndContext
         sensors={sensors}
@@ -524,8 +520,8 @@ export default function QuoteApp() {
         onDragOver={handleDragOver}
         onDragEnd={handleDragEnd}
       >
-        <div className="flex gap-4 pb-2">
-          {fiveDayPeriod.map((date, index) => {
+        <div className="flex items-start gap-4 pb-2">
+          {columnPeriod.map((date: Date, index: number) => {
             const key = dateToKey(date)
             const items = state[key] || []
             const isToday = isSameDay(date, today)
@@ -536,7 +532,7 @@ export default function QuoteApp() {
                 index={index}
                 items={items}
                 isToday={isToday}
-                onAddItem={() => handleAddItem(key)}
+                onEditItem={handleEditItem}
                 onDeleteItem={handleDeleteItem}
               />
             )
@@ -546,12 +542,21 @@ export default function QuoteApp() {
           {activeItem ? (
             <Card className="shadow-lg">
               <CardContent className="flex items-center justify-between p-4">
-                <span>{activeItem.content}</span>
+                <span>{activeItem.txn.desc}</span>
               </CardContent>
             </Card>
           ) : null}
         </DragOverlay>
       </DndContext>
+
+      <BudgetItemDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        onSave={handleSaveItem}
+        editItem={editingItem}
+        availableTags={tags}
+        onAddTag={addTag}
+      />
     </div>
   )
 }

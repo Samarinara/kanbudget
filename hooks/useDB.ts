@@ -11,6 +11,9 @@ import {
 } from "@/lib/crypto"
 
 const SALT_KEY = "kanbudget_salt"
+const TAGS_KEY = "kanbudget_tags"
+
+const DEFAULT_TAGS = ["business", "groceries", "impulse"]
 
 interface UseDBReturn {
   isUnlocked: boolean
@@ -18,15 +21,18 @@ interface UseDBReturn {
   unlock: (passphrase: string) => Promise<void>
   txns: ITxn[]
   columns: IColumn[]
+  tags: string[]
   addTxn: (txn: Omit<ITxn, "id">) => Promise<number>
   updateTxn: (id: number, txn: Partial<ITxn>) => Promise<void>
   deleteTxn: (id: number) => Promise<void>
   moveTxnToColumn: (txnId: number, columnId: string) => Promise<void>
+  addTag: (tag: string) => void
 }
 
 export function useDB(): UseDBReturn {
   const [isUnlocked, setIsUnlocked] = useState(false)
   const [isFirstRun, setIsFirstRun] = useState(false)
+  const [tags, setTags] = useState<string[]>(DEFAULT_TAGS)
   const keyRef = useRef<CryptoKey | null>(null)
 
   const txns = useLiveQuery(() => db.txns.toArray()) ?? []
@@ -37,6 +43,13 @@ export function useDB(): UseDBReturn {
       const saltStr = localStorage.getItem(SALT_KEY)
       if (!saltStr) {
         setIsFirstRun(true)
+      }
+
+      const storedTags = localStorage.getItem(TAGS_KEY)
+      if (storedTags) {
+        setTags(JSON.parse(storedTags))
+      } else {
+        localStorage.setItem(TAGS_KEY, JSON.stringify(DEFAULT_TAGS))
       }
     }
     init()
@@ -157,15 +170,29 @@ export function useDB(): UseDBReturn {
     []
   )
 
+  const addTag = useCallback(
+    (tag: string) => {
+      const normalizedTag = tag.toLowerCase().trim()
+      if (normalizedTag && !tags.includes(normalizedTag)) {
+        const newTags = [...tags, normalizedTag]
+        setTags(newTags)
+        localStorage.setItem(TAGS_KEY, JSON.stringify(newTags))
+      }
+    },
+    [tags]
+  )
+
   return {
     isUnlocked,
     isFirstRun,
     unlock,
     txns,
     columns,
+    tags,
     addTxn,
     updateTxn,
     deleteTxn,
     moveTxnToColumn,
+    addTag,
   }
 }

@@ -5,6 +5,7 @@ export interface ITxn {
   date: string
   img?: string
   note?: string
+  tags?: string[]
   recurring?: {
     freq: "daily" | "weekly" | "monthly"
     interval: number
