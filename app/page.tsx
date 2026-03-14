@@ -26,11 +26,26 @@ import { CSS } from "@dnd-kit/utilities"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog"
 import { useDB } from "@/hooks/useDB"
 import { useVisibleColumns } from "@/hooks/useVisibleColumns"
 import { BudgetItemDialog } from "@/components/budget-item-dialog"
 import { ITxn } from "@/types"
-import { IconPlus, IconTrash } from "@tabler/icons-react"
+import {
+  IconPlus,
+  IconTrash,
+  IconSettings,
+  IconLogout,
+  IconKey,
+  IconDownload,
+} from "@tabler/icons-react"
 
 interface TxnItem {
   id: number
@@ -284,10 +299,28 @@ export default function QuoteApp() {
   const [endDate, setEndDate] = useState<Date>(new Date(today))
   const visibleColumns = useVisibleColumns()
 
-  const { txns, addTxn, updateTxn, deleteTxn, moveTxnToColumn, tags, addTag } =
-    useDB()
+  const {
+    txns,
+    addTxn,
+    updateTxn,
+    deleteTxn,
+    moveTxnToColumn,
+    tags,
+    addTag,
+    isUnlocked,
+    isFirstRun,
+    unlock,
+    downloadRecoveryKit,
+    resetPassword,
+  } = useDB()
 
   const [dialogOpen, setDialogOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [resetPassOpen, setResetPassOpen] = useState(false)
+  const [passphrase, setPassphrase] = useState("")
+  const [newPassphrase, setNewPassphrase] = useState("")
+  const [confirmPassphrase, setConfirmPassphrase] = useState("")
+  const [unlockError, setUnlockError] = useState("")
   const [editingItem, setEditingItem] = useState<ITxn | null>(null)
 
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -476,6 +509,48 @@ export default function QuoteApp() {
     setEndDate(new Date(today))
   }
 
+  const handleUnlock = async (e?: React.FormEvent) => {
+    e?.preventDefault()
+    setUnlockError("")
+    try {
+      await unlock(passphrase)
+      setPassphrase("")
+    } catch {
+      setUnlockError("Invalid passphrase")
+    }
+  }
+
+  const handleLogout = () => {
+    window.location.reload()
+  }
+
+  const handleResetPassword = async () => {
+    if (!passphrase) {
+      setUnlockError("Please enter your current passphrase")
+      return
+    }
+    if (newPassphrase !== confirmPassphrase) {
+      setUnlockError("Passphrases do not match")
+      return
+    }
+    if (newPassphrase.length < 4) {
+      setUnlockError("Passphrase must be at least 4 characters")
+      return
+    }
+    try {
+      await resetPassword(passphrase, newPassphrase)
+      setResetPassOpen(false)
+      setPassphrase("")
+      setNewPassphrase("")
+      setConfirmPassphrase("")
+      setUnlockError("")
+    } catch (e) {
+      setUnlockError(
+        e instanceof Error ? e.message : "Failed to reset password"
+      )
+    }
+  }
+
   const activeItem = activeId
     ? Object.values(state)
         .flat()
@@ -483,80 +558,229 @@ export default function QuoteApp() {
     : null
 
   return (
-    <div className="p-2 md:p-4">
-      <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex gap-2">
-          <Button
-            variant="secondary"
-            onClick={navigatePrev}
-            className="flex-1 sm:flex-initial"
-          >
-            ← Prev
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={goToToday}
-            className="flex-1 sm:flex-initial"
-          >
-            Today
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={navigateNext}
-            className="flex-1 sm:flex-initial"
-          >
-            Next →
-          </Button>
+    <>
+      {!isUnlocked && (
+        <div className="flex min-h-screen items-center justify-center bg-background p-4">
+          <Card className="w-full max-w-md">
+            <CardHeader>
+              <CardTitle>
+                {isFirstRun ? "Create Passphrase" : "Unlock KanBudget"}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-4">
+              <div className="flex flex-col gap-2">
+                <label htmlFor="passphrase" className="text-sm font-medium">
+                  Passphrase
+                </label>
+                <Input
+                  id="passphrase"
+                  type="password"
+                  placeholder="Enter your passphrase"
+                  value={passphrase}
+                  onChange={(e) => setPassphrase(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleUnlock()}
+                />
+              </div>
+              {unlockError && (
+                <p className="text-sm text-red-500">{unlockError}</p>
+              )}
+              <Button onClick={handleUnlock}>
+                {isFirstRun ? "Create & Unlock" : "Unlock"}
+              </Button>
+            </CardContent>
+          </Card>
         </div>
-        <Button onClick={handleAddItem} className="w-full sm:w-auto">
-          <IconPlus size={16} className="mr-1" />
-          Add Item
-        </Button>
-      </div>
-      <DndContext
-        sensors={sensors}
-        collisionDetection={rectIntersection}
-        onDragStart={handleDragStart}
-        onDragOver={handleDragOver}
-        onDragEnd={handleDragEnd}
-      >
-        <div className="flex items-start gap-4 pb-2">
-          {columnPeriod.map((date: Date, index: number) => {
-            const key = dateToKey(date)
-            const items = state[key] || []
-            const isToday = isSameDay(date, today)
-            return (
-              <CalendarColumn
-                key={key}
-                date={date}
-                index={index}
-                items={items}
-                isToday={isToday}
-                onEditItem={handleEditItem}
-                onDeleteItem={handleDeleteItem}
-              />
-            )
-          })}
-        </div>
-        <DragOverlay dropAnimation={dropAnimation}>
-          {activeItem ? (
-            <Card className="shadow-lg">
-              <CardContent className="flex items-center justify-between p-4">
-                <span>{activeItem.txn.desc}</span>
-              </CardContent>
-            </Card>
-          ) : null}
-        </DragOverlay>
-      </DndContext>
+      )}
 
-      <BudgetItemDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        onSave={handleSaveItem}
-        editItem={editingItem}
-        availableTags={tags}
-        onAddTag={addTag}
-      />
-    </div>
+      <Dialog open={resetPassOpen} onOpenChange={setResetPassOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reset Password</DialogTitle>
+            <DialogDescription>
+              Enter your current passphrase to verify, then choose a new one.
+              Make sure to download your recovery kit first.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-4 py-4">
+            <div className="flex flex-col gap-2">
+              <label
+                htmlFor="currentPassphrase"
+                className="text-sm font-medium"
+              >
+                Current Passphrase
+              </label>
+              <Input
+                id="currentPassphrase"
+                type="password"
+                placeholder="Enter current passphrase"
+                value={passphrase}
+                onChange={(e) => setPassphrase(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <label htmlFor="newPassphrase" className="text-sm font-medium">
+                New Passphrase
+              </label>
+              <Input
+                id="newPassphrase"
+                type="password"
+                placeholder="Enter new passphrase"
+                value={newPassphrase}
+                onChange={(e) => setNewPassphrase(e.target.value)}
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <label
+                htmlFor="confirmPassphrase"
+                className="text-sm font-medium"
+              >
+                Confirm Passphrase
+              </label>
+              <Input
+                id="confirmPassphrase"
+                type="password"
+                placeholder="Confirm passphrase"
+                value={confirmPassphrase}
+                onChange={(e) => setConfirmPassphrase(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleResetPassword()}
+              />
+            </div>
+            {unlockError && (
+              <p className="text-sm text-red-500">{unlockError}</p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setResetPassOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleResetPassword}>Reset Password</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {isUnlocked && (
+        <div className="p-2 md:p-4">
+          <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                onClick={navigatePrev}
+                className="flex-1 sm:flex-initial"
+              >
+                ← Prev
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={goToToday}
+                className="flex-1 sm:flex-initial"
+              >
+                Today
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={navigateNext}
+                className="flex-1 sm:flex-initial"
+              >
+                Next →
+              </Button>
+            </div>
+            <div className="relative flex gap-2">
+              <button
+                type="button"
+                onClick={() => setSettingsOpen(!settingsOpen)}
+                className="inline-flex size-9 items-center justify-center rounded-4xl border border-transparent bg-secondary text-sm font-medium whitespace-nowrap text-secondary-foreground transition-all hover:bg-secondary/80"
+              >
+                <IconSettings size={18} />
+              </button>
+              {settingsOpen && (
+                <div className="absolute top-full right-0 z-50 mt-2 w-48 rounded-2xl border bg-popover p-2 shadow-2xl">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      downloadRecoveryKit()
+                      setSettingsOpen(false)
+                    }}
+                    className="flex w-full items-center rounded-lg px-2 py-1.5 text-sm hover:bg-muted"
+                  >
+                    <IconDownload size={16} className="mr-2" />
+                    Recovery Kit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSettingsOpen(false)
+                      setResetPassOpen(true)
+                    }}
+                    className="flex w-full items-center rounded-lg px-2 py-1.5 text-sm hover:bg-muted"
+                  >
+                    <IconKey size={16} className="mr-2" />
+                    Reset Password
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleLogout()
+                      setSettingsOpen(false)
+                    }}
+                    className="flex w-full items-center rounded-lg px-2 py-1.5 text-sm text-red-500 hover:bg-muted"
+                  >
+                    <IconLogout size={16} className="mr-2" />
+                    Logout
+                  </button>
+                </div>
+              )}
+              <Button onClick={handleAddItem} className="w-full sm:w-auto">
+                <IconPlus size={16} className="mr-1" />
+                Add Item
+              </Button>
+            </div>
+          </div>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={rectIntersection}
+            onDragStart={handleDragStart}
+            onDragOver={handleDragOver}
+            onDragEnd={handleDragEnd}
+          >
+            <div className="flex items-start gap-4 pb-2">
+              {columnPeriod.map((date: Date, index: number) => {
+                const key = dateToKey(date)
+                const items = state[key] || []
+                const isToday = isSameDay(date, today)
+                return (
+                  <CalendarColumn
+                    key={key}
+                    date={date}
+                    index={index}
+                    items={items}
+                    isToday={isToday}
+                    onEditItem={handleEditItem}
+                    onDeleteItem={handleDeleteItem}
+                  />
+                )
+              })}
+            </div>
+            <DragOverlay dropAnimation={dropAnimation}>
+              {activeItem ? (
+                <Card className="shadow-lg">
+                  <CardContent className="flex items-center justify-between p-4">
+                    <span>{activeItem.txn.desc}</span>
+                  </CardContent>
+                </Card>
+              ) : null}
+            </DragOverlay>
+          </DndContext>
+
+          <BudgetItemDialog
+            open={dialogOpen}
+            onOpenChange={setDialogOpen}
+            onSave={handleSaveItem}
+            editItem={editingItem}
+            availableTags={tags}
+            onAddTag={addTag}
+          />
+        </div>
+      )}
+    </>
   )
 }

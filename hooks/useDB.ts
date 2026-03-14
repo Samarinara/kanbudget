@@ -2,12 +2,15 @@
 
 import { useState, useEffect, useCallback, useRef } from "react"
 import { useLiveQuery } from "dexie-react-hooks"
-import { db, type ITxn, type IColumn } from "@/lib/db"
+import { db, type ITxn, type IColumn, type ITxnWithCipher } from "@/lib/db"
 import {
   deriveKey,
   generateSalt,
   saltToBase64,
   base64ToSalt,
+  encrypt,
+  decrypt,
+  exportKeyForRecovery,
 } from "@/lib/crypto"
 
 const SALT_KEY = "kanbudget_salt"
@@ -19,6 +22,11 @@ interface UseDBReturn {
   isUnlocked: boolean
   isFirstRun: boolean
   unlock: (passphrase: string) => Promise<void>
+  downloadRecoveryKit: () => Promise<void>
+  resetPassword: (
+    currentPassphrase: string,
+    newPassphrase: string
+  ) => Promise<void>
   txns: ITxn[]
   columns: IColumn[]
   tags: string[]
@@ -34,9 +42,36 @@ export function useDB(): UseDBReturn {
   const [isFirstRun, setIsFirstRun] = useState(false)
   const [tags, setTags] = useState<string[]>(DEFAULT_TAGS)
   const keyRef = useRef<CryptoKey | null>(null)
+  const saltRef = useRef<Uint8Array | null>(null)
 
-  const txns = useLiveQuery(() => db.txns.toArray()) ?? []
+  const [decryptedTxns, setDecryptedTxns] = useState<ITxn[]>([])
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const rawTxns = useLiveQuery(() => db.txns.toArray()) ?? []
   const columns = useLiveQuery(() => db.columns.toArray()) ?? []
+
+  useEffect(() => {
+    const decryptTxns = async () => {
+      if (!keyRef.current) {
+        setDecryptedTxns(rawTxns as ITxn[])
+        return
+      }
+
+      const decrypted: ITxn[] = []
+      for (const txn of rawTxns) {
+        if (txn.cipher) {
+          const decryptedTxn = await decrypt<ITxn>(txn.cipher, keyRef.current!)
+          decrypted.push({ ...decryptedTxn, id: txn.id })
+        } else {
+          decrypted.push(txn as ITxn)
+        }
+      }
+      setDecryptedTxns(decrypted)
+    }
+    decryptTxns()
+  }, [rawTxns, isUnlocked])
+
+  const txns = decryptedTxns
 
   useEffect(() => {
     const init = async () => {
@@ -76,13 +111,79 @@ export function useDB(): UseDBReturn {
       const newSalt = generateSalt()
       salt = saltToBase64(newSalt)
       localStorage.setItem(SALT_KEY, salt)
+      saltRef.current = newSalt
       setIsFirstRun(false)
+    } else {
+      saltRef.current = base64ToSalt(salt)
     }
 
-    const key = await deriveKey(passphrase, base64ToSalt(salt))
+    const key = await deriveKey(passphrase, saltRef.current)
     keyRef.current = key
     setIsUnlocked(true)
   }, [])
+
+  const downloadRecoveryKit = useCallback(async () => {
+    if (!keyRef.current || !saltRef.current) return
+
+    const recoveryKit = await exportKeyForRecovery(
+      keyRef.current,
+      saltRef.current
+    )
+    const blob = new Blob([JSON.stringify(recoveryKit, null, 2)], {
+      type: "application/json",
+    })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = "kanbudget-recovery.json"
+    a.click()
+    URL.revokeObjectURL(url)
+  }, [])
+
+  const resetPassword = useCallback(
+    async (currentPassphrase: string, newPassphrase: string) => {
+      if (!saltRef.current) throw new Error("No salt found")
+
+      const currentKey = await deriveKey(currentPassphrase, saltRef.current)
+      const currentExported = await crypto.subtle.exportKey("jwk", currentKey)
+      const existingExported = await crypto.subtle.exportKey(
+        "jwk",
+        keyRef.current!
+      )
+      if (
+        JSON.stringify(currentExported.k) !== JSON.stringify(existingExported.k)
+      ) {
+        throw new Error("Invalid current passphrase")
+      }
+
+      const newSalt = generateSalt()
+      const newKey = await deriveKey(newPassphrase, newSalt)
+
+      const allTxns = await db.txns.toArray()
+      const reEncrypted: ITxnWithCipher[] = []
+
+      for (const txn of allTxns) {
+        if (txn.cipher) {
+          const decrypted = await decrypt<ITxn>(txn.cipher, currentKey)
+          const newCipher = await encrypt(decrypted, newKey)
+          reEncrypted.push({
+            ...decrypted,
+            id: txn.id,
+            cipher: newCipher,
+          } as ITxnWithCipher)
+        } else {
+          reEncrypted.push(txn as ITxnWithCipher)
+        }
+      }
+
+      await db.txns.bulkPut(reEncrypted)
+
+      localStorage.setItem(SALT_KEY, saltToBase64(newSalt))
+      saltRef.current = newSalt
+      keyRef.current = newKey
+    },
+    []
+  )
 
   const getColumnForDate = useCallback((date: string): string => {
     const txnDate = new Date(date)
@@ -112,7 +213,12 @@ export function useDB(): UseDBReturn {
       const column = await db.columns.get(columnId)
       if (!column) return -1
 
-      const id = await db.txns.add(txn as ITxn)
+      let cipher: ArrayBuffer | undefined
+      if (keyRef.current) {
+        cipher = await encrypt(txn, keyRef.current)
+      }
+
+      const id = await db.txns.add({ ...txn, cipher } as ITxnWithCipher)
       if (id === undefined) return -1
 
       await db.columns.update(columnId, {
@@ -125,7 +231,15 @@ export function useDB(): UseDBReturn {
   )
 
   const updateTxn = useCallback(async (id: number, txn: Partial<ITxn>) => {
-    await db.txns.update(id, txn)
+    let cipher: ArrayBuffer | undefined
+    if (keyRef.current) {
+      const existing = await db.txns.get(id)
+      if (existing) {
+        const merged = { ...existing, ...txn } as ITxn
+        cipher = await encrypt(merged, keyRef.current)
+      }
+    }
+    await db.txns.update(id, { ...txn, cipher } as Partial<ITxnWithCipher>)
   }, [])
 
   const deleteTxn = useCallback(async (id: number) => {
@@ -165,7 +279,18 @@ export function useDB(): UseDBReturn {
         targetColumnId === "done"
           ? txn.date
           : new Date().toISOString().split("T")[0]
-      await db.txns.update(txnId, { date: newDate })
+
+      let cipher: ArrayBuffer | undefined
+      if (keyRef.current && txn.cipher) {
+        const decrypted = await decrypt<ITxn>(txn.cipher, keyRef.current)
+        const updated = { ...decrypted, date: newDate, id: txn.id }
+        cipher = await encrypt(updated, keyRef.current)
+      }
+
+      await db.txns.update(txnId, {
+        date: newDate,
+        cipher,
+      } as Partial<ITxnWithCipher>)
     },
     []
   )
@@ -186,6 +311,8 @@ export function useDB(): UseDBReturn {
     isUnlocked,
     isFirstRun,
     unlock,
+    downloadRecoveryKit,
+    resetPassword,
     txns,
     columns,
     tags,
